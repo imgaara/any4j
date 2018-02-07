@@ -4,7 +4,7 @@
 syntax = "proto3";
 
 option java_multiple_files = true;
-option java_package = "java.org.zero.proto";
+option java_package = "org.zero.proto";
 option java_outer_classname = "Any4JProto";
 option objc_class_prefix = "A4J";
 
@@ -12,28 +12,36 @@ package any4j;
 
 // Interface exported by the server.
 service Any4J {
-    rpc GetField(FieldCommand) returns (Response) {}
-    rpc SetField(FieldCommand) returns (Response) {}
-    rpc GetServerEntryPoint(FieldCommand) returns (Response) {}
+    rpc GetField(FieldGetCommand) returns (Response) {}
+    rpc SetField(FieldSetCommand) returns (Response) {}
+    rpc GetServerEntryPoint(AJVoid) returns (Response) {}
+    rpc Call(CallCommand) returns (Response) {}
+}
+
+message AJVoid {
 }
 
 message CallCommand {
-    string target_object_id = 1;
+    AJObject target_object = 1;
     string method_name = 2;
-    repeated CommonObject arguments = 3;
+    repeated AJObject arguments = 3;
 }
 
 message ConstructorCommand {
     string fqn = 1;
-    repeated CommonObject arguments = 2;
-
+    repeated AJObject arguments = 2;
 }
 
-message FieldCommand {
-    string sub_command = 1;
-    string target_object_id = 2;
-    string filed_name = 3;
-    string value = 4;
+message FieldGetCommand {
+    AJObject target_object = 1;
+    string filed_name = 2;
+    bool auto_fetch_all = 3;
+}
+
+message FieldSetCommand {
+    AJObject target_object = 1;
+    string filed_name = 2;
+    AJObject value = 3;
 }
 
 message ReflectionCommand {
@@ -50,26 +58,38 @@ message ArrayCommand {
 
 }
 
-message CommonObject {
+message AJMethod {
     string name = 1;
-    string type = 2;
-    string primitive_object = 3;
-    bool is_reference = 4;
-    bool is_null = 5;
-    bool is_error = 6;
-    bool is_void = 7;
-    bool is_decimal = 8;
-    bool is_array = 9;
-    bool is_list = 10;
-    bool is_map = 11;
-    bool is_set = 12;
-    bool is_iterator = 13;
-    int32 size = 14;
-    string command_part = 15; // py4j command protocol
+    string visibility = 2;
+    bool is_static = 3;
+}
+
+message AJObject {
+    string object_id = 1;
+    string name = 2;
+    string type = 3;
+    string primitive_object = 4;
+    bool is_reference = 5;
+    bool is_null = 6;
+    bool is_error = 7;
+    bool is_void = 8;
+    bool is_decimal = 9;
+    bool is_array = 10;
+    bool is_list = 11;
+    bool is_map = 12;
+    bool is_set = 13;
+    bool is_iterator = 14;
+    int32 size = 15;
+    repeated AJMethod methods = 16;
+    repeated AJMethod static_methods = 17;
+    repeated AJObject fields = 18;
+    repeated AJObject static_fields = 19;
+    repeated AJObject static_classes = 20;
+    string command_part = 21;
 }
 
 message Response {
     string status_code = 1;
-    CommonObject return_object = 2;
-    string py4j_response = 3;
+    string message = 2;
+    AJObject return_object = 3;
 }

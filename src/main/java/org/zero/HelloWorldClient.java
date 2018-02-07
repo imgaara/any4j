@@ -19,10 +19,19 @@ package org.zero;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
+import py4j.ReturnObject;
+import py4j.reflection.ReflectionEngine;
 
-import java.org.zero.proto.Any4JGrpc;
-import java.org.zero.proto.FieldCommand;
-import java.org.zero.proto.ReturnObject;
+import org.zero.proto.AJObject;
+import org.zero.proto.AJVoid;
+import org.zero.proto.Any4JGrpc;
+import org.zero.proto.CallCommand;
+import org.zero.proto.Response;
+
+import java.lang.reflect.Array;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -58,16 +67,35 @@ public class HelloWorldClient {
   /** Say hello to server. */
   public void greet(String name) {
     logger.info("Will try to greet " + name + " ...");
-    FieldCommand request = FieldCommand.newBuilder().setTargetObjectId("1").setFiledName("test").build();
 
-    ReturnObject response;
+    AJVoid request = AJVoid.newBuilder().build();
+
+    Response response;
     try {
-      response = blockingStub.getField(request);
+      response = blockingStub.getServerEntryPoint(request);
     } catch (StatusRuntimeException e) {
       logger.log(Level.WARNING, "RPC failed: {0}", e.getStatus());
       return;
     }
     logger.info("Greeting: " + response);
+
+    try {
+      CallCommand.Builder callCmd = CallCommand.newBuilder();
+      callCmd.setTargetObject(response.getReturnObject());
+      callCmd.setMethodName("add");
+      callCmd.addArguments(premitiveObj(2));
+      callCmd.addArguments(premitiveObj(3));
+      response = blockingStub.call(callCmd.build());
+    } catch (StatusRuntimeException e) {
+      logger.log(Level.WARNING, "RPC failed: {0}", e.getStatus());
+      return;
+    }
+    logger.info("Greeting: " + response);
+  }
+
+  public static AJObject premitiveObj(int i) {
+    ReturnObject returnObject = ReturnObject.getPrimitiveReturnObject(i);
+    return HelloWorldServer.Any4jServerImpl.toAJObjectBuilder(returnObject).build();
   }
 
   /**

@@ -19,17 +19,24 @@ package org.zero;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.stub.StreamObserver;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import py4j.Gateway;
 import py4j.Protocol;
 import py4j.ReturnObject;
+import py4j.reflection.MethodInvoker;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.org.zero.proto.Any4JGrpc;
-import java.org.zero.proto.CommonObject;
-import java.org.zero.proto.FieldCommand;
-import java.org.zero.proto.Response;
-import java.org.zero.proto.ReturnObject;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import org.zero.proto.AJMethod;
+import org.zero.proto.AJObject;
+import org.zero.proto.AJVoid;
+import org.zero.proto.Any4JGrpc;
+import org.zero.proto.CallCommand;
+import org.zero.proto.FieldGetCommand;
+import org.zero.proto.FieldSetCommand;
+import org.zero.proto.Response;
 import java.util.logging.Logger;
 
 /**
@@ -85,79 +92,101 @@ public class HelloWorldServer {
 
   static class Any4jServerImpl extends Any4JGrpc.Any4JImplBase {
 
-    private Gateway gateway;
+    private Gateway gateway = new Gateway(this);
+
+    public int add(int a, int b) {
+      return a + b;
+    }
 
     @Override
-    public void getField(FieldCommand fieldCommand, StreamObserver<Response> responseObserver) {
+    public void getField(FieldGetCommand fieldCommand, StreamObserver<Response> responseObserver) {
+      AJObject ajObject = fieldCommand.getTargetObject();
 
-      String objectId = fieldCommand.getTargetObjectId();
+      Response.Builder response = Response.newBuilder();
+      if (!ajObject.getIsReference()) {
+        response.setStatusCode(HttpResponseStatus.BAD_REQUEST.codeAsText().toString());
+        response.setMessage("not a object for " + ajObject.getName());
+        responseObserver.onNext(response.build());
+        responseObserver.onCompleted();
+        return;
+      }
+
       String fieldName = fieldCommand.getFiledName();
+      Object object = gateway.getObject(ajObject.getObjectId());
+
+      AJObject retObj = deepFetch(object, fieldName, fieldCommand.getAutoFetchAll());
+
+      response.setReturnObject(retObj);
+      responseObserver.onNext(response.build());
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void setField(FieldSetCommand fieldCommand, StreamObserver<Response> responseObserver) {
+      String objectId = fieldCommand.getTargetObject().getObjectId();
+      String fieldName = fieldCommand.getFiledName();
+      AJObject value = fieldCommand.getValue();
 
       Object object = gateway.getObject(objectId);
+      Object valueObject = Protocol.getObject(value.getName(), gateway);
       Field field = gateway.getReflectionEngine().getField(object, fieldName);
 
-      logger.finer("Getting field " + fieldName);
-      String returnCommand = null;
-      Response.Builder response = Response.newBuilder();
-
-      if (field == null) {
-        returnCommand = Protocol.getNoSuchFieldOutputCommand();
-      } else {
-        Object fieldObject = gateway.getReflectionEngine().getFieldValue(object, field);
-        ReturnObject rObject = gateway.getReturnObject(fieldObject);
-        returnCommand = Protocol.getOutputCommand(rObject);
-        response.setReturnObject(toAny4jReturnObject(rObject));
-      }
-
-      response.setPy4JResponse(returnCommand);
-
-      responseObserver.onNext(response.build());
-      responseObserver.onCompleted();
-    }
-
-    @Override
-    public void setField(FieldCommand fieldCommand, StreamObserver<Response> responseObserver) {
-      String objectId = fieldCommand.getTargetObjectId();
-      String fieldName = fieldCommand.getFiledName();
-      String value = fieldCommand.getValue();
-
-      Object object = gateway.getObject(objectId);
-      Object valueObject = Protocol.getObject(value, gateway);
-      Field field = gateway.getReflectionEngine().getFieldValue(object, fieldName);
-
       logger.finer("Setting field " + fieldName);
-      String returnCommand = null;
       Response.Builder response = Response.newBuilder();
 
       if (field == null) {
-        returnCommand = Protocol.getNoSuchFieldOutputCommand();
+        response.setMessage(Protocol.getNoSuchFieldOutputCommand());
       } else {
         gateway.getReflectionEngine().setFieldValue(object, field, valueObject);
-        returnCommand = Protocol.getOutputVoidCommand();
       }
 
-      response.setPy4JResponse(returnCommand);
+      response.setStatusCode(HttpResponseStatus.OK.codeAsText().toString());
       responseObserver.onNext(response.build());
       responseObserver.onCompleted();
     }
 
     @Override
-    public void getServerEntryPoint(FieldCommand request, StreamObserver<Response> responseObserver) {
+    public void getServerEntryPoint(AJVoid request, StreamObserver<Response> responseObserver) {
       Object obj = gateway.getEntryPoint();
       ReturnObject rObject = gateway.getReturnObject(obj);
-      String returnCommand = Protocol.getOutputCommand(rObject);
 
       Response.Builder response = Response.newBuilder();
-      response.setReturnObject(toAny4jReturnObject(rObject));
-      response.setPy4JResponse(returnCommand);
+      response.setStatusCode(HttpResponseStatus.OK.codeAsText().toString());
+      response.setReturnObject(toAJObjectBuilder(rObject).build());
       responseObserver.onNext(response.build());
       responseObserver.onCompleted();
     }
 
-    private static CommonObject toAny4jReturnObject(py4j.ReturnObject py4jReturnObj) {
-      CommonObject.Builder returnObject =  CommonObject.newBuilder();
-      returnObject.setName(py4jReturnObj.getName());
-      returnObject.setCommandPart(py4jReturnObj.getCommandPart());
+    @Override
+    public void call(CallCommand request, StreamObserver<Response> responseObserver) {
+      Object object = gateway.getObject(request.getTargetObject().getObjectId());
+
+      Object[] args = request.getArgumentsList().stream().map(
+              a -> Protocol.getObject(a.getCommandPart(), gateway)
+      ).toArray();
+
+      MethodInvoker invoker = gateway.getReflectionEngine().getMethod(object, request.getMethodName(), args);
+
+      Object ret = gateway.getReflectionEngine().invoke(object, invoker, args);
+
+      Response.Builder response = Response.newBuilder();
+      ReturnObject rObject = gateway.getReturnObject(ret);
+
+      response.setStatusCode(HttpResponseStatus.OK.codeAsText().toString());
+      response.setReturnObject(toAJObjectBuilder(rObject).build());
+      responseObserver.onNext(response.build());
+      responseObserver.onCompleted();
+    }
+
+    public static AJObject.Builder toAJObjectBuilder(py4j.ReturnObject py4jReturnObj) {
+      AJObject.Builder returnObject =  AJObject.newBuilder();
+      if (py4jReturnObj.isReference()) {
+        returnObject.setObjectId(py4jReturnObj.getName());
+      }
+
+      if (py4jReturnObj.getName() != null) {
+        returnObject.setName(py4jReturnObj.getName());
+      }
       returnObject.setIsArray(py4jReturnObj.isArray());
       returnObject.setIsDecimal(py4jReturnObj.isDecimal());
       returnObject.setIsError(py4jReturnObj.isError());
@@ -168,9 +197,63 @@ public class HelloWorldServer {
       returnObject.setIsReference(py4jReturnObj.isReference());
       returnObject.setIsSet(py4jReturnObj.isSet());
       returnObject.setIsVoid(py4jReturnObj.isVoid());
-      returnObject.setPrimitiveObject(py4jReturnObj.getPrimitiveObject().toString());
+      if (py4jReturnObj.getPrimitiveObject() != null) {
+        returnObject.setPrimitiveObject(py4jReturnObj.getPrimitiveObject().toString());
+      }
       returnObject.setSize(py4jReturnObj.getSize());
-      return returnObject.build();
+
+      if (py4jReturnObj.getCommandPart() != null) {
+        returnObject.setCommandPart(py4jReturnObj.getCommandPart());
+      }
+      return returnObject;
+    }
+
+    private static AJMethod toAJMethod(Method method) {
+      AJMethod.Builder builder = AJMethod.newBuilder();
+      builder.setName(method.getName());
+      builder.setVisibility("public");
+      if (Modifier.isStatic(method.getModifiers())) {
+        builder.setIsStatic(true);
+      }
+      return builder.build();
+    }
+
+    private AJObject deepFetch(Object object, String fieldName, boolean autoFetchAll) {
+      Field field = gateway.getReflectionEngine().getField(object, fieldName);
+
+      if (field == null) {
+        return null;
+      }
+
+      logger.finer("Getting field " + fieldName);
+
+      Object fieldObject = gateway.getReflectionEngine().getFieldValue(object, field);
+      ReturnObject rObject = gateway.getReturnObject(fieldObject);
+      AJObject.Builder builder = toAJObjectBuilder(rObject);
+
+      if (autoFetchAll) {
+        for (String publicFieldName : gateway.getReflectionEngine().getPublicFieldNames(fieldObject)) {
+          AJObject oneField = deepFetch(fieldObject, publicFieldName, autoFetchAll);
+          builder.addFields(oneField);
+        }
+
+        for (String publicFieldName : gateway.getReflectionEngine().getPublicStaticFieldNames(fieldObject.getClass())) {
+          AJObject oneStaticField = deepFetch(fieldObject.getClass(), publicFieldName, autoFetchAll);
+          builder.addStaticFields(oneStaticField);
+        }
+
+        for (String methodName : gateway.getReflectionEngine().getPublicMethodNames(fieldObject)) {
+          Method method = gateway.getReflectionEngine().getMethod(object.getClass(), methodName);
+          builder.addMethods(toAJMethod(method));
+        }
+
+        for (String methodName : gateway.getReflectionEngine().getPublicStaticMethodNames(fieldObject.getClass())) {
+          Method staticMethod = gateway.getReflectionEngine().getMethod(object.getClass(), methodName);
+          builder.addMethods(toAJMethod(staticMethod));
+        }
+      }
+
+      return builder.build();
     }
   }
 }
